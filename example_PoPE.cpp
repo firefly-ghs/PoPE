@@ -75,8 +75,7 @@ static uint16_t float_to_half(float f) {
     } else if (exp > 30) {
         return (uint16_t)(sign | 0x7C00u);
     }
-    // 使用 + 而不是 | 以便让位元进位正确增加指数 (Exponent)
-    return (uint16_t)(sign | ((uint32_t)exp << 10) + ((mant + 0x00001000u) >> 13));
+    return (uint16_t)(sign | (exp << 10) | (mant + 0x00001000u) >> 13);
 }
 
 // Load binary file containing f16 (IEEE-754 binary16) values and convert to float
@@ -106,9 +105,10 @@ void save_bin_f16(const std::string& path, const float* data, size_t count) {
 }
 
 int main() {
-    // --- 1. 调用 Python 生成输入 ---
+    // --- 1. 调用 Python 生成输入（使用 0-code 目录下的脚本） ---
+    // 程序在 0-code 目录下运行，脚本就在当前目录
     std::cout << "Step 1: 正在调用 Python 生成原始矩阵..." << std::endl;
-    int ret1 = std::system("/workspaces/PoPE/.venv/bin/python pytorch_PoPE.py");
+    int ret1 = std::system("python pytorch_PoPE.py");
     if (ret1 != 0) { std::cerr << "调用 Python 生成数据失败, 返回码=" << ret1 << std::endl; return -1; }
 
     // --- 2. 加载数据 ---
@@ -162,12 +162,12 @@ int main() {
                 for (int d_idx = 0; d_idx < dim / 2; ++d_idx) {
                     int idx_real_q = ((b * seq_len + l) * q_heads + hq) * dim + (d_idx * 2);
                     int idx_imag_q = idx_real_q + 1;
-                    double q_r = q_in[idx_real_q];
-                    double q_i = q_in[idx_imag_q];
-                    double mu_q = std::sqrt(q_r * q_r + q_i * q_i);
-                    double theta = static_cast<double>(l) * inv_freq[d_idx];
-                    q_cpp[idx_real_q] = static_cast<float>(mu_q * std::cos(theta));
-                    q_cpp[idx_imag_q] = static_cast<float>(mu_q * std::sin(theta));
+                    float q_r = q_in[idx_real_q];
+                    float q_i = q_in[idx_imag_q];
+                    float mu_q = std::sqrt(q_r * q_r + q_i * q_i);
+                    float theta = static_cast<float>(l) * inv_freq[d_idx];
+                    q_cpp[idx_real_q] = mu_q * std::cos(theta);
+                    q_cpp[idx_imag_q] = mu_q * std::sin(theta);
                 }
             }
 
@@ -176,13 +176,13 @@ int main() {
                 for (int d_idx = 0; d_idx < dim / 2; ++d_idx) {
                     int idx_real_k = ((b * seq_len + l) * k_heads + hk) * dim + (d_idx * 2);
                     int idx_imag_k = idx_real_k + 1;
-                    double k_r = k_in[idx_real_k];
-                    double k_i = k_in[idx_imag_k];
-                    double mu_k = std::sqrt(k_r * k_r + k_i * k_i);
-                    double theta = static_cast<double>(l) * inv_freq[d_idx];
-                    double k_phase = theta + delta[d_idx];
-                    k_cpp[idx_real_k] = static_cast<float>(mu_k * std::cos(k_phase));
-                    k_cpp[idx_imag_k] = static_cast<float>(mu_k * std::sin(k_phase));
+                    float k_r = k_in[idx_real_k];
+                    float k_i = k_in[idx_imag_k];
+                    float mu_k = std::sqrt(k_r * k_r + k_i * k_i);
+                    float theta = static_cast<float>(l) * inv_freq[d_idx];
+                    float k_phase = theta + delta[d_idx];
+                    k_cpp[idx_real_k] = mu_k * std::cos(k_phase);
+                    k_cpp[idx_imag_k] = mu_k * std::sin(k_phase);
                 }
             }
         }
@@ -194,8 +194,8 @@ int main() {
 
     std::cout << "C++ 计算完成并已写出 q_cpp_output.bin/k_cpp_output.bin" << std::endl;
 
-    // 调用对比脚本
-    std::string cmp_cmd = "/workspaces/PoPE/.venv/bin/python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 1e-5";
+    // 调用 0-code 目录下的对比脚本
+    std::string cmp_cmd = "python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 1e-5";
     std::cout << "Running compare: " << cmp_cmd << std::endl;
     int cmp_rc = std::system(cmp_cmd.c_str());
     if (cmp_rc != 0) {
