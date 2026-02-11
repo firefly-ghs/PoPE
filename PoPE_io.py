@@ -68,8 +68,8 @@ class PoPEIO:
         """加载PoPE输入数据"""
         q_shape = (batch, seq_len, q_heads, head_dim)
         k_shape = (batch, seq_len, k_heads, head_dim)
-        q = self.load_tensor("data/q_input.bin", q_shape)
-        k = self.load_tensor("data/k_input.bin", k_shape)
+        q = self.load_tensor("q_input.bin", q_shape)
+        k = self.load_tensor("k_input.bin", k_shape)
         return q, k
     
     # 未来HIP代码的扩展接口预留

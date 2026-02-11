@@ -14,7 +14,6 @@ class PoPE(nn.Module):
         # 可学习的偏置 delta_c，初始化为 0 或均匀分布
         # 对应 d/2 个复数分量
         self.delta = nn.Parameter(torch.zeros(head_dim // 2))
-        
         # 论文建议将 delta 限制在 [-2pi, 0] 之间
         #self.max_seq_len_cached = max_position_embeddings
         self._set_cos_sin_cache(max_position_embeddings)
@@ -35,8 +34,11 @@ class PoPE(nn.Module):
         k_split = k.reshape(*k.shape[:-1], -1, 2)
         # 计算模长: mu = sqrt(x^2 + y^2)
         # 论文提到可以使用 softplus 或 ReLU 进一步处理模长，这里采用标准二范数
-        mu_q = torch.norm(q_split, p=2, dim=-1) # (batch, seq_len, q_heads, head_dim/2) 
-        mu_k = torch.norm(k_split, p=2, dim=-1) # (batch, seq_len, k_heads, head_dim/2) 
+        #mu_q = torch.norm(q_split, p=2, dim=-1) # (batch, seq_len, q_heads, head_dim/2) 
+        #mu_k = torch.norm(k_split, p=2, dim=-1) # (batch, seq_len, k_heads, head_dim/2) 
+        # 计算模长: mu = sqrt(x^2 + y^2) - 使用float32精度以匹配C++
+        mu_q = torch.norm(q_split.to(torch.float32), p=2, dim=-1).to(q_split.dtype) 
+        mu_k = torch.norm(k_split.to(torch.float32), p=2, dim=-1).to(k_split.dtype)
         
         # 2. 获取预计算的 cos 和 sin (对应位置 t 和 s)
         cos = self.cos_cached[:seq_len, :] # (seq_len, dim/2)
@@ -72,21 +74,24 @@ class PoPE(nn.Module):
         return q_pope, k_pope
 
 if __name__ == "__main__":
+    torch.manual_seed(42)
     # 参数设置: 
     batch, seq_len, q_heads, k_heads, head_dim = 1, 256, 128, 1, 64
     
-    # 1. 初始化IO管理器
+    # 1. 初始化IO管理器 - 输出到 build/data 目录
     data_dir = "data"
     pope_io = PoPEIO(base_dir=data_dir, device="cpu")
    
     # 2. 生成输入数据
-    q, k = pope_io.generate_input_data(batch, seq_len, q_heads, k_heads, head_dim)
+    q, k = pope_io.generate_input_data(batch, seq_len, q_heads, k_heads, head_dim, dtype=torch.float16)
     print(f"输入数据形状: Q={q.shape}, K={k.shape}")
     
     # 3. 使用PoPE层
     pope_layer = PoPE(head_dim=head_dim)
+    pope_layer.delta.data.zero_()
     q_out, k_out = pope_layer(q, k, seq_len)
     
     # 4. 保存结果
     pope_io.save_pope_results(q_out, k_out, "q_py_output.bin", "k_py_output.bin")
     print(f"输出数据已保存到: {data_dir}")
+
