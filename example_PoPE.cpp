@@ -70,17 +70,26 @@ static uint16_t float_to_half(float f) {
     if (exp <= 0) {
         if (exp < -10) return (uint16_t)sign;
         mant = (mant | 0x00800000u) >> (1 - exp);
-        return (uint16_t)(sign | (mant + 0x00001000u) >> 13);
+        // Round to nearest even
+        uint32_t h_mant = mant >> 13;
+        if (mant & 0x00001000u) {
+            if ((mant & 0x00000FFFu) || (h_mant & 1)) h_mant++;
+        }
+        return (uint16_t)(sign | h_mant);
     } else if (exp >= 31) {
         return (uint16_t)(sign | 0x7C00u);
     }
-    mant = mant + 0x00001000u;
-    if (mant & 0x00800000u) {
-        mant = 0;
+    // Round to nearest even
+    uint32_t h_mant = mant >> 13;
+    if (mant & 0x00001000u) {
+        if ((mant & 0x00000FFFu) || (h_mant & 1)) h_mant++;
+    }
+    if (h_mant >= 0x0400u) {
+        h_mant = 0;
         exp++;
     }
     if (exp >= 31) return (uint16_t)(sign | 0x7C00u);
-    return (uint16_t)(sign | (exp << 10) | (mant >> 13));
+    return (uint16_t)(sign | (exp << 10) | h_mant);
 }
 
 // Load binary file containing f16 (IEEE-754 binary16) values and convert to float
@@ -150,9 +159,9 @@ int main() {
     }
 
     // Python 端通常没有单独保存 inv_freq/delta，这里按 PoPE 的公式重建, delta 默认为 0
-    const float base = 10000.0f;
+    const double base_d = 10000.0;
     for (int i = 0; i < dim / 2; ++i) {
-        inv_freq[i] = 1.0f / std::pow(base, static_cast<float>((2 * i)) / static_cast<float>(dim));
+        inv_freq[i] = static_cast<float>(1.0 / std::pow(base_d, static_cast<double>(2 * i) / static_cast<double>(dim)));
         // delta[i] 保持为 0 （与 PyTorch 初始化一致）
     }
 
@@ -167,12 +176,12 @@ int main() {
                 for (int d_idx = 0; d_idx < dim / 2; ++d_idx) {
                     int idx_real_q = ((b * seq_len + l) * q_heads + hq) * dim + (d_idx * 2);
                     int idx_imag_q = idx_real_q + 1;
-                    float q_r = q_in[idx_real_q];
-                    float q_i = q_in[idx_imag_q];
-                    float mu_q = std::sqrt(q_r * q_r + q_i * q_i);
-                    float theta = static_cast<float>(l) * inv_freq[d_idx];
-                    q_cpp[idx_real_q] = mu_q * std::cos(theta);
-                    q_cpp[idx_imag_q] = mu_q * std::sin(theta);
+                    double q_r = q_in[idx_real_q];
+                    double q_i = q_in[idx_imag_q];
+                    double mu_q = std::sqrt(q_r * q_r + q_i * q_i);
+                    double theta = static_cast<double>(l) * static_cast<double>(inv_freq[d_idx]);
+                    q_cpp[idx_real_q] = static_cast<float>(mu_q * std::cos(theta));
+                    q_cpp[idx_imag_q] = static_cast<float>(mu_q * std::sin(theta));
                 }
             }
 
@@ -181,13 +190,13 @@ int main() {
                 for (int d_idx = 0; d_idx < dim / 2; ++d_idx) {
                     int idx_real_k = ((b * seq_len + l) * k_heads + hk) * dim + (d_idx * 2);
                     int idx_imag_k = idx_real_k + 1;
-                    float k_r = k_in[idx_real_k];
-                    float k_i = k_in[idx_imag_k];
-                    float mu_k = std::sqrt(k_r * k_r + k_i * k_i);
-                    float theta = static_cast<float>(l) * inv_freq[d_idx];
-                    float k_phase = theta + delta[d_idx];
-                    k_cpp[idx_real_k] = mu_k * std::cos(k_phase);
-                    k_cpp[idx_imag_k] = mu_k * std::sin(k_phase);
+                    double k_r = k_in[idx_real_k];
+                    double k_i = k_in[idx_imag_k];
+                    double mu_k = std::sqrt(k_r * k_r + k_i * k_i);
+                    double theta = static_cast<double>(l) * static_cast<double>(inv_freq[d_idx]);
+                    double k_phase = theta + static_cast<double>(delta[d_idx]);
+                    k_cpp[idx_real_k] = static_cast<float>(mu_k * std::cos(k_phase));
+                    k_cpp[idx_imag_k] = static_cast<float>(mu_k * std::sin(k_phase));
                 }
             }
         }
@@ -199,8 +208,8 @@ int main() {
 
     std::cout << "C++ 计算完成并已写出 q_cpp_output.bin/k_cpp_output.bin" << std::endl;
 
-    // 调用对比脚本
-    std::string cmp_cmd = "/workspaces/PoPE/.venv/bin/python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 1e-5";
+    // 调用对比脚本 - 针对 Float16 使用更合理的容差 2e-3 (对应 1 ULP)
+    std::string cmp_cmd = "/workspaces/PoPE/.venv/bin/python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 2e-3";
     std::cout << "Running compare: " << cmp_cmd << std::endl;
     int cmp_rc = std::system(cmp_cmd.c_str());
     if (cmp_rc != 0) {

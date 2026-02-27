@@ -32,17 +32,17 @@ class PoPE(nn.Module):
         ## GPT-J style
         q_split = q.reshape(*q.shape[:-1], -1, 2)
         k_split = k.reshape(*k.shape[:-1], -1, 2)
-        # 计算模长: mu = sqrt(x^2 + y^2)
-        # 论文提到可以使用 softplus 或 ReLU 进一步处理模长，这里采用标准二范数
-        #mu_q = torch.norm(q_split, p=2, dim=-1) # (batch, seq_len, q_heads, head_dim/2) 
-        #mu_k = torch.norm(k_split, p=2, dim=-1) # (batch, seq_len, k_heads, head_dim/2) 
-        # 计算模长: mu = sqrt(x^2 + y^2) - 使用float32精度以匹配C++
-        mu_q = torch.norm(q_split.to(torch.float32), p=2, dim=-1).to(q_split.dtype) 
-        mu_k = torch.norm(k_split.to(torch.float32), p=2, dim=-1).to(k_split.dtype)
+        
+        q_32 = q_split.to(torch.float32)
+        k_32 = k_split.to(torch.float32)
+        
+        # 计算模长: mu = sqrt(x^2 + y^2) - 显式使用 sqrt(r^2+i^2) 以匹配 C++
+        mu_q = torch.sqrt(q_32[..., 0]**2 + q_32[..., 1]**2)
+        mu_k = torch.sqrt(k_32[..., 0]**2 + k_32[..., 1]**2)
         
         # 2. 获取预计算的 cos 和 sin (对应位置 t 和 s)
-        cos = self.cos_cached[:seq_len, :] # (seq_len, dim/2)
-        sin = self.sin_cached[:seq_len, :]
+        cos = self.cos_cached[:seq_len, :].to(torch.float32) # (seq_len, dim/2)
+        sin = self.sin_cached[:seq_len, :].to(torch.float32)
         
         # 3. 构造 PoPE 转换后的 Q 和 K
         # 对于 Query: q_new = mu_q * exp(i * t * theta)
@@ -53,18 +53,17 @@ class PoPE(nn.Module):
         q_imag = mu_q * sin_r
         
         # 对于 Key: k_new = mu_k * exp(i * (s * theta + delta))
-        # 使用复数乘法公式: exp(i(A+B)) = exp(iA)exp(iB)
-        # = (cosA cosB - sinA sinB) + i(sinA cosB + cosA sinB)
-        delta_cos = torch.cos(self.delta)
-        delta_sin = torch.sin(self.delta)
+        # 对齐 C++ 逻辑：直接对相位加 delta 再算 cos/sin
+        # 而不是使用复数乘法展开，以减少舍入误差差异
+        t = torch.arange(seq_len, device=q.device, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq.to(torch.float32)) # (seq_len, dim/2)
+        phases = freqs + self.delta.to(torch.float32)
         
-        k_cos_total = cos * delta_cos - sin * delta_sin
-        k_sin_total = sin * delta_cos + cos * delta_sin
+        k_cos_total = torch.cos(phases).unsqueeze(0).unsqueeze(2)
+        k_sin_total = torch.sin(phases).unsqueeze(0).unsqueeze(2)
         
-        k_cos_r = k_cos_total.unsqueeze(0).unsqueeze(2)  # (1, seq_len, 1, dim/2)
-        k_sin_r = k_sin_total.unsqueeze(0).unsqueeze(2)
-        k_real = mu_k * k_cos_r
-        k_imag = mu_k * k_sin_r
+        k_real = mu_k * k_cos_total
+        k_imag = mu_k * k_sin_total
         
         # 4. 重新组合成笛卡尔坐标形式输出
         # 将 real 和 imag 拼接回原来的维度
