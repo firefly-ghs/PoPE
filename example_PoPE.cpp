@@ -47,11 +47,13 @@ static float half_to_float(uint16_t h) {
             float f; std::memcpy(&f, &bits, 4); return f;
         }
         // subnormal
-        while ((mant & 0x0200u) == 0) { mant <<= 1; --exp; }
-        ++exp;
-        mant &= 0x03FFu;
+        uint32_t m = mant << 13;
+        uint32_t e = 0;
+        while (!(m & 0x00800000u)) { m <<= 1; e--; }
+        uint32_t bits = sign | ((e + 127 - 14) << 23) | (m & 0x007FFFFFu);
+        float f; std::memcpy(&f, &bits, 4); return f;
     } else if (exp == 0x1F) {
-        uint32_t bits = sign | 0x7F800000u | (mant ? 0x00400000u : 0);
+        uint32_t bits = sign | 0x7F800000u | (mant << 13);
         float f; std::memcpy(&f, &bits, 4); return f;
     }
     exp = exp + (127 - 15);
@@ -69,13 +71,16 @@ static uint16_t float_to_half(float f) {
         if (exp < -10) return (uint16_t)sign;
         mant = (mant | 0x00800000u) >> (1 - exp);
         return (uint16_t)(sign | (mant + 0x00001000u) >> 13);
-    } else if (exp == 0x1F - (127 - 15)) {
-        if (mant == 0) return (uint16_t)(sign | 0x7C00u);
-        else return (uint16_t)(sign | 0x7C00u | (mant ? 0x0200u : 0));
-    } else if (exp > 30) {
+    } else if (exp >= 31) {
         return (uint16_t)(sign | 0x7C00u);
     }
-    return (uint16_t)(sign | (exp << 10) | (mant + 0x00001000u) >> 13);
+    mant = mant + 0x00001000u;
+    if (mant & 0x00800000u) {
+        mant = 0;
+        exp++;
+    }
+    if (exp >= 31) return (uint16_t)(sign | 0x7C00u);
+    return (uint16_t)(sign | (exp << 10) | (mant >> 13));
 }
 
 // Load binary file containing f16 (IEEE-754 binary16) values and convert to float
@@ -108,7 +113,7 @@ int main() {
     // --- 1. 调用 Python 生成输入（使用 0-code 目录下的脚本） ---
     // 程序在 0-code 目录下运行，脚本就在当前目录
     std::cout << "Step 1: 正在调用 Python 生成原始矩阵..." << std::endl;
-    int ret1 = std::system("python pytorch_PoPE.py");
+    int ret1 = std::system("/workspaces/PoPE/.venv/bin/python pytorch_PoPE.py");
     if (ret1 != 0) { std::cerr << "调用 Python 生成数据失败, 返回码=" << ret1 << std::endl; return -1; }
 
     // --- 2. 加载数据 ---
@@ -194,8 +199,8 @@ int main() {
 
     std::cout << "C++ 计算完成并已写出 q_cpp_output.bin/k_cpp_output.bin" << std::endl;
 
-    // 调用 0-code 目录下的对比脚本
-    std::string cmp_cmd = "python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 1e-5";
+    // 调用对比脚本
+    std::string cmp_cmd = "/workspaces/PoPE/.venv/bin/python compare_PoPE.py --q_cpp data/q_cpp_output.bin --k_cpp data/k_cpp_output.bin --q_py data/q_py_output.bin --k_py data/k_py_output.bin --batch 1 --seq_len 256 --q_heads 128 --k_heads 1 --dim 64 --tol 1e-5";
     std::cout << "Running compare: " << cmp_cmd << std::endl;
     int cmp_rc = std::system(cmp_cmd.c_str());
     if (cmp_rc != 0) {
