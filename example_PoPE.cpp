@@ -122,7 +122,7 @@ int main() {
     // --- 1. 调用 Python 生成输入（使用 0-code 目录下的脚本） ---
     // 程序在 0-code 目录下运行，脚本就在当前目录
     std::cout << "Step 1: 正在调用 Python 生成原始矩阵..." << std::endl;
-    int ret1 = std::system("/workspaces/PoPE/.venv/bin/python pytorch_PoPE.py");
+    int ret1 = std::system("/workspaces/PoPE/.venv/bin/python PoPE_pytorch.py");
     if (ret1 != 0) { std::cerr << "调用 Python 生成数据失败, 返回码=" << ret1 << std::endl; return -1; }
 
     // --- 2. 加载数据 ---
